@@ -267,6 +267,8 @@
       <input type="text" inputmode="numeric" id="runHeartRateInput" placeholder="예: 142">
       <label class="runLabel" id="runElevationLabelText">고도 상승 (선택)</label>
       <input type="text" id="runElevationInput" placeholder="예: 35m">
+      <label class="runLabel" id="runCadenceLabelText">케이던스 (선택)</label>
+      <input type="text" inputmode="numeric" id="runCadenceInput" placeholder="예: 112">
       <label class="runLabel" id="runRawTextLabelText">인식된 텍스트 (직접 수정 가능)</label>
       <textarea id="runRawText" rows="3"></textarea>
       <button class="submit" id="runSaveBtn" onclick="saveRunEntry()">저장</button>
@@ -467,12 +469,15 @@ const UI = {
     runFormTitle:"🏃 러닝 기록",
     runDateLabel:"날짜", runDistanceLabel:"거리", runPaceLabel:"평균 페이스", runTimeLabel:"시간",
     runCaloriesLabel:"칼로리 (선택)", runHeartRateLabel:"평균 심박수 (선택)", runElevationLabel:"고도 상승 (선택)",
+    runCadenceLabel:"케이던스 (선택)",
     runRawTextLabel:"인식된 텍스트 (직접 수정 가능)",
     runDistancePh:"예: 5.21", runPacePh:"예: 5'42\"/km", runTimePh:"예: 32:15", runCaloriesPh:"예: 350",
-    runHeartRatePh:"예: 142", runElevationPh:"예: 35m",
+    runHeartRatePh:"예: 142", runElevationPh:"예: 35m", runCadencePh:"예: 112",
     runSaveBtn:"저장", runHistoryHeader:"러닝 기록 목록", runHistoryEmpty:"아직 저장된 러닝 기록이 없어요.",
     ocrLoadingLib:"인식 엔진을 불러오는 중...", ocrRecognizing:"이미지에서 텍스트를 인식하는 중...",
+    ocrDownscaling:"이미지를 준비하는 중...",
     ocrDone:"인식 완료! 아래 값을 확인하고 저장하세요.", ocrFailed:"인식에 실패했어요. 인터넷 연결을 확인하거나 직접 입력해주세요.",
+    ocrDateFound:"스크린샷에서 날짜를 찾아 자동으로 입력했어요.",
     toastRunNeedData:"거리 또는 시간을 입력해주세요", toastRunSaved:"러닝 기록을 저장했어요 🏃"
   },
   en: {
@@ -513,12 +518,15 @@ const UI = {
     runFormTitle:"🏃 Running Record",
     runDateLabel:"Date", runDistanceLabel:"Distance", runPaceLabel:"Avg Pace", runTimeLabel:"Time",
     runCaloriesLabel:"Calories (optional)", runHeartRateLabel:"Avg Heart Rate (optional)", runElevationLabel:"Elevation Gain (optional)",
+    runCadenceLabel:"Cadence (optional)",
     runRawTextLabel:"Recognized text (editable)",
     runDistancePh:"e.g. 5.21", runPacePh:"e.g. 5'42\"/km", runTimePh:"e.g. 32:15", runCaloriesPh:"e.g. 350",
-    runHeartRatePh:"e.g. 142", runElevationPh:"e.g. 35m",
+    runHeartRatePh:"e.g. 142", runElevationPh:"e.g. 35m", runCadencePh:"e.g. 112",
     runSaveBtn:"Save", runHistoryHeader:"Running History", runHistoryEmpty:"No running records yet.",
     ocrLoadingLib:"Loading recognition engine...", ocrRecognizing:"Recognizing text in image...",
+    ocrDownscaling:"Preparing image...",
     ocrDone:"Done! Check the values below and save.", ocrFailed:"Recognition failed. Check your internet connection or enter manually.",
+    ocrDateFound:"Found a date in the screenshot and filled it in automatically.",
     toastRunNeedData:"Please enter distance or time", toastRunSaved:"Running record saved 🏃"
   }
 };
@@ -764,6 +772,7 @@ function applyStaticLanguage(){
   document.getElementById("runCaloriesLabelText").textContent = u.runCaloriesLabel;
   document.getElementById("runHeartRateLabelText").textContent = u.runHeartRateLabel;
   document.getElementById("runElevationLabelText").textContent = u.runElevationLabel;
+  document.getElementById("runCadenceLabelText").textContent = u.runCadenceLabel;
   document.getElementById("runRawTextLabelText").textContent = u.runRawTextLabel;
   document.getElementById("runDistanceInput").placeholder = u.runDistancePh;
   document.getElementById("runPaceInput").placeholder = u.runPacePh;
@@ -771,6 +780,7 @@ function applyStaticLanguage(){
   document.getElementById("runCaloriesInput").placeholder = u.runCaloriesPh;
   document.getElementById("runHeartRateInput").placeholder = u.runHeartRatePh;
   document.getElementById("runElevationInput").placeholder = u.runElevationPh;
+  document.getElementById("runCadenceInput").placeholder = u.runCadencePh;
   document.getElementById("runSaveBtn").textContent = u.runSaveBtn;
   document.getElementById("runHistoryHeader").textContent = u.runHistoryHeader;
   document.getElementById("modalTitle").textContent = u.modalTitle;
@@ -1173,13 +1183,65 @@ function loadTesseract(){
   return tesseractLoadingPromise;
 }
 
+// ---- Image preprocessing: crop out the top status-bar strip (which can contain
+// a phone clock that gets misread as the run "time"), and downscale large
+// screenshots so OCR runs faster. Returns {blob, width, height} of the
+// processed image (height/width are of the CROPPED image actually sent to OCR).
+function preprocessRunImage(file, opts){
+  const cropTopFraction = (opts && opts.cropTopFraction!=null) ? opts.cropTopFraction : 0.06;
+  const maxWidth = (opts && opts.maxWidth) || 1000;
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      try{
+        const srcW = img.naturalWidth, srcH = img.naturalHeight;
+        const cropTop = Math.round(srcH * cropTopFraction);
+        const cropH = srcH - cropTop;
+        let outW = srcW, outH = cropH;
+        if(outW > maxWidth){
+          const scale = maxWidth / outW;
+          outW = Math.round(outW * scale);
+          outH = Math.round(outH * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = outW;
+        canvas.height = outH;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, cropTop, srcW, cropH, 0, 0, outW, outH);
+        canvas.toBlob((blob)=>{
+          if(blob) resolve({blob, width:outW, height:outH});
+          else reject(new Error("canvas toBlob failed"));
+        }, "image/png");
+      }catch(e){ reject(e); }
+    };
+    img.onerror = ()=> reject(new Error("image load failed"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// ---- Fallback: pure text/regex parsing (used when bbox/line data isn't
+// available, or to fill in any field the structured parser couldn't find).
 function parseRunningOcr(text){
-  const result = {distance:"", unit:"km", pace:"", time:"", calories:"", heartRate:"", elevation:""};
+  const result = {distance:"", unit:"km", pace:"", time:"", calories:"", heartRate:"", elevation:"", cadence:""};
   if(!text) return result;
   const cleaned = text.replace(/,/g, ".");
 
-  const dist = cleaned.match(/(\d+(?:\.\d+)?)\s*(km|mi|miles?)\b/i);
-  if(dist){ result.distance = dist[1]; result.unit = /mi/i.test(dist[2]) ? "mi" : "km"; }
+  // Accept abbreviations (km/mi) directly after the number, OR spelled-out
+  // unit words (Kilometers/Miles) appearing on their own nearby (common when
+  // the number is on one row of a stat grid and the unit label is the row below).
+  const distInline = cleaned.match(/(\d+(?:\.\d+)?)\s*(km|mi|miles?)\b/i);
+  if(distInline){
+    result.distance = distInline[1];
+    result.unit = /mi/i.test(distInline[2]) ? "mi" : "km";
+  } else {
+    const unitWord = cleaned.match(/\b(kilometers?|miles?)\b/i);
+    if(unitWord){
+      result.unit = /mi/i.test(unitWord[1]) ? "mi" : "km";
+      // grab the nearest standalone decimal/integer number anywhere in the text
+      const num = cleaned.match(/\b(\d{1,3}\.\d{1,2})\b/) || cleaned.match(/\b(\d{1,3})\b/);
+      if(num) result.distance = num[1];
+    }
+  }
 
   const pace = cleaned.match(/(\d{1,2})[':](\d{2})\s*(?:"|″)?\s*\/?\s*(km|mi)?/i);
   if(pace){ result.pace = `${pace[1]}'${pace[2]}"` + (pace[3] ? `/${pace[3].toLowerCase()}` : ""); }
@@ -1189,9 +1251,10 @@ function parseRunningOcr(text){
     result.time = timeLabeled[1];
   } else {
     const longTime = cleaned.match(/\b(\d{1,2}:\d{2}:\d{2})\b/);
-    const shortTime = cleaned.match(/\b(\d{1,2}:\d{2})\b/);
     if(longTime) result.time = longTime[1];
-    else if(shortTime) result.time = shortTime[1];
+    // NOTE: deliberately no unanchored mm:ss fallback here anymore -- a bare
+    // "9:25" pattern is indistinguishable from a phone status-bar clock, so
+    // without a label or seconds component we leave it blank rather than guess.
   }
 
   const cal = cleaned.match(/(\d+)\s*(kcal|cal)\b/i);
@@ -1200,12 +1263,190 @@ function parseRunningOcr(text){
   const hr = cleaned.match(/(\d{2,3})\s*bpm/i);
   if(hr) result.heartRate = hr[1];
 
+  const cad = cleaned.match(/(\d{2,3})[^\d]{0,15}cadence/i) || cleaned.match(/cadence[^\d]{0,10}(\d{2,3})/i);
+  if(cad) result.cadence = cad[1];
+
   const elevA = cleaned.match(/(\d+(?:\.\d+)?)\s*m\b[^a-zA-Z]{0,15}(elev|gain)/i);
   const elevB = cleaned.match(/(elev|gain)[^\d]{0,10}(\d+(?:\.\d+)?)\s*m\b/i);
   if(elevA) result.elevation = elevA[1];
   else if(elevB) result.elevation = elevB[2];
 
   return result;
+}
+
+// Try to find a date the screenshot itself displays (e.g. "6/25/26" or
+// "6/25/2026") and convert it to a YYYY-MM-DD key. Returns null if not found
+// or if the result isn't a sane calendar date.
+function parseRunningOcrDate(text){
+  if(!text) return null;
+  const m = text.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
+  if(!m) return null;
+  let month = parseInt(m[1],10), day = parseInt(m[2],10), year = parseInt(m[3],10);
+  if(year < 100) year += 2000;
+  if(month<1||month>12||day<1||day>31) return null;
+  const mm = String(month).padStart(2,"0");
+  const dd = String(day).padStart(2,"0");
+  return `${year}-${mm}-${dd}`;
+}
+
+// ---- Structured (bounding-box) parsing. Stat-grid screenshots (Nike Run
+// Club, Garmin Connect, etc.) typically show a row of big numbers with a row
+// of labels directly below each one, repeated across several rows. Plain
+// text regexes break on this because OCR linearizes the grid row-by-row, so
+// a label's nearest number in the TEXT may actually belong to a different
+// column. Instead, this groups words into visual rows by y-position, then
+// matches each "label row" to the value row directly above it by x-position
+// (column alignment) -- not by character distance in the linear text.
+function groupWordsIntoRows(words){
+  const sorted = words.slice().sort((a,b)=> a.bbox.y0 - b.bbox.y0);
+  const rows = [];
+  sorted.forEach(w=>{
+    const cy = (w.bbox.y0 + w.bbox.y1) / 2;
+    let row = rows.find(r => Math.abs(r.cy - cy) < (w.bbox.y1 - w.bbox.y0) * 0.6 + 6);
+    if(!row){ row = {cy, words:[]}; rows.push(row); }
+    row.words.push(w);
+    row.cy = row.words.reduce((s,ww)=> s + (ww.bbox.y0+ww.bbox.y1)/2, 0) / row.words.length;
+  });
+  rows.sort((a,b)=> a.cy - b.cy);
+  rows.forEach(r => r.words.sort((a,b)=> a.bbox.x0 - b.bbox.x0));
+  return rows;
+}
+
+const RUN_LABEL_PATTERNS = {
+  distance: /kilometers?|miles?\b|^km$|^mi$/i,
+  pace: /pace/i,
+  time: /^time$/i,
+  calories: /calor/i,
+  heartRate: /heart|bpm/i,
+  elevation: /elev/i,
+  cadence: /cadence/i
+};
+
+function isNumberLikeWord(text){
+  const cleaned = text.replace(/,/g, ".");
+  return /\d/.test(cleaned) && /^[\d:.'"″′\-]+$/.test(cleaned);
+}
+
+function centerX(w){ return (w.bbox.x0 + w.bbox.x1) / 2; }
+
+// Split a row's words into column groups based on horizontal gaps -- words
+// close together (e.g. "Avg." + "Pace", or "Elevation" + "Gain") belong to
+// the same stat column; a bigger gap starts a new column. This is what lets
+// us tell "Calories | Elevation Gain | Cadence | Avg Heart Rate" apart as 4
+// separate stats instead of one long blob of label text.
+function clusterRowIntoColumns(row, gapThreshold){
+  const gap = gapThreshold || 42;
+  const words = row.words.slice().sort((a,b)=> a.bbox.x0 - b.bbox.x0);
+  const cols = [];
+  let current = null, lastX1 = null;
+  words.forEach(w=>{
+    if(current && (w.bbox.x0 - lastX1) <= gap){
+      current.words.push(w);
+    } else {
+      current = {words:[w]};
+      cols.push(current);
+    }
+    lastX1 = w.bbox.x1;
+  });
+  cols.forEach(c=>{
+    c.x0 = Math.min(...c.words.map(w=>w.bbox.x0));
+    c.x1 = Math.max(...c.words.map(w=>w.bbox.x1));
+    c.cx = (c.x0 + c.x1) / 2;
+    c.text = c.words.map(w=>w.text).join(" ");
+  });
+  return cols;
+}
+
+function normalizeFieldValue(field, rawWordsText){
+  const cleaned = rawWordsText.replace(/,/g, ".");
+  if(field==="distance"){
+    const m = cleaned.match(/(\d{1,3}\.\d{1,2})/) || cleaned.match(/(\d{1,3})/);
+    return m ? m[1] : "";
+  }
+  if(field==="time"){
+    const m = cleaned.match(/(\d{1,2}:\d{2}:\d{2})/) || cleaned.match(/(\d{1,2}:\d{2})/);
+    return m ? m[1] : "";
+  }
+  if(field==="pace"){
+    const m = cleaned.match(/(\d{1,2})[':″′]\s*(\d{2})/);
+    return m ? `${m[1]}'${m[2]}"` : "";
+  }
+  if(field==="calories" || field==="cadence" || field==="heartRate"){
+    if(/^-+$/.test(cleaned.trim())) return ""; // e.g. "--" meaning no data
+    const m = cleaned.match(/(\d{1,3})/);
+    return m ? m[1] : "";
+  }
+  if(field==="elevation"){
+    const m = cleaned.match(/(\d+(?:\.\d+)?)/);
+    return m ? m[1] : "";
+  }
+  return "";
+}
+
+function parseRunningOcrWords(words){
+  const result = {distance:"", unit:"km", pace:"", time:"", calories:"", heartRate:"", elevation:"", cadence:""};
+  if(!words || words.length===0) return result;
+  const rows = groupWordsIntoRows(words);
+  const claimed = {};
+
+  for(let i=0; i<rows.length; i++){
+    const labelCols = clusterRowIntoColumns(rows[i]);
+    // find the nearest row ABOVE this one that looks like it holds values
+    let valueRow = null;
+    for(let j=i-1; j>=0 && j>=i-2; j--){
+      if(rows[j].words.some(w=> isNumberLikeWord(w.text))){ valueRow = rows[j]; break; }
+    }
+    if(!valueRow) continue;
+    const valueCols = clusterRowIntoColumns(valueRow);
+
+    labelCols.forEach(col=>{
+      const field = Object.keys(RUN_LABEL_PATTERNS).find(f=> !claimed[f] && RUN_LABEL_PATTERNS[f].test(col.text));
+      if(!field) return;
+      // pick the value column horizontally closest to this label column
+      let best = null, bestDist = Infinity;
+      valueCols.forEach(vc=>{
+        const d = Math.abs(vc.cx - col.cx);
+        if(d < bestDist){ bestDist = d; best = vc; }
+      });
+      if(!best) return;
+      const val = normalizeFieldValue(field, best.text);
+      if(!val) return;
+      result[field] = val;
+      claimed[field] = true;
+      if(field==="distance"){
+        result.unit = /mi/i.test(col.text) ? "mi" : "km";
+      }
+    });
+  }
+  return result;
+}
+
+function flattenWordsFromTesseractData(data){
+  const words = [];
+  const collect = (blocks)=>{
+    (blocks||[]).forEach(block=>{
+      (block.paragraphs||[]).forEach(para=>{
+        (para.lines||[]).forEach(line=>{
+          (line.words||[]).forEach(w=>{
+            if(w && w.bbox && w.text) words.push({text:w.text, bbox:w.bbox});
+          });
+        });
+      });
+    });
+  };
+  if(data.blocks && data.blocks.length) collect(data.blocks);
+  else if(data.words && data.words.length){
+    data.words.forEach(w=>{ if(w && w.bbox && w.text) words.push({text:w.text, bbox:w.bbox}); });
+  }
+  return words;
+}
+
+function mergeRunParseResults(structured, fallback){
+  const merged = {};
+  ["distance","unit","pace","time","calories","heartRate","elevation","cadence"].forEach(field=>{
+    merged[field] = (structured && structured[field]) ? structured[field] : ((fallback && fallback[field]) || (field==="unit" ? "km" : ""));
+  });
+  return merged;
 }
 
 function fillRunForm(p){
@@ -1216,6 +1457,7 @@ function fillRunForm(p){
   document.getElementById("runCaloriesInput").value = p.calories || "";
   document.getElementById("runHeartRateInput").value = p.heartRate || "";
   document.getElementById("runElevationInput").value = p.elevation || "";
+  document.getElementById("runCadenceInput").value = p.cadence || "";
 }
 
 async function handleRunImageSelected(event){
@@ -1223,16 +1465,36 @@ async function handleRunImageSelected(event){
   const file = event.target.files && event.target.files[0];
   if(!file) return;
   const statusEl = document.getElementById("runOcrStatus");
-  statusEl.textContent = u.ocrLoadingLib;
+  statusEl.textContent = u.ocrDownscaling;
   try{
+    const processed = await preprocessRunImage(file, {cropTopFraction:0.06, maxWidth:1000});
+    statusEl.textContent = u.ocrLoadingLib;
     await loadTesseract();
     statusEl.textContent = u.ocrRecognizing;
-    const { data } = await Tesseract.recognize(file, 'eng');
+    const { data } = await Tesseract.recognize(processed.blob, 'eng', {
+      blocks: true,
+      logger: (m)=>{
+        if(m && m.status === "recognizing text" && typeof m.progress === "number"){
+          statusEl.textContent = `${u.ocrRecognizing} (${Math.round(m.progress*100)}%)`;
+        }
+      }
+    });
     const text = data.text || "";
     document.getElementById("runRawText").value = text;
-    const parsed = parseRunningOcr(text);
-    fillRunForm(parsed);
-    statusEl.textContent = u.ocrDone;
+
+    const words = flattenWordsFromTesseractData(data);
+    const structured = parseRunningOcrWords(words);
+    const fallback = parseRunningOcr(text);
+    const merged = mergeRunParseResults(structured, fallback);
+    fillRunForm(merged);
+
+    const detectedDate = parseRunningOcrDate(text);
+    if(detectedDate){
+      document.getElementById("runDateInput").value = detectedDate;
+      statusEl.textContent = u.ocrDone + " " + u.ocrDateFound;
+    } else {
+      statusEl.textContent = u.ocrDone;
+    }
   }catch(err){
     console.error(err);
     statusEl.textContent = u.ocrFailed;
@@ -1251,11 +1513,12 @@ function saveRunEntry(){
   const calories = document.getElementById("runCaloriesInput").value.trim();
   const heartRate = document.getElementById("runHeartRateInput").value.trim();
   const elevation = document.getElementById("runElevationInput").value.trim();
+  const cadence = document.getElementById("runCadenceInput").value.trim();
   const raw = document.getElementById("runRawText").value;
   if(!distance && !time){ showToast(u.toastRunNeedData); return; }
 
   const runs = loadRuns();
-  runs.unshift({date, distance, unit, pace, time, calories, heartRate, elevation, raw});
+  runs.unshift({date, distance, unit, pace, time, calories, heartRate, elevation, cadence, raw});
   saveRuns(runs);
   clearRunForm();
   renderRunHistory();
@@ -1264,7 +1527,7 @@ function saveRunEntry(){
 }
 
 function clearRunForm(){
-  ["runDistanceInput","runPaceInput","runTimeInput","runCaloriesInput","runHeartRateInput","runElevationInput","runRawText"].forEach(id=>{
+  ["runDistanceInput","runPaceInput","runTimeInput","runCaloriesInput","runHeartRateInput","runElevationInput","runCadenceInput","runRawText"].forEach(id=>{
     document.getElementById(id).value = "";
   });
   document.getElementById("runDateInput").value = todayDateKey();
@@ -1287,7 +1550,8 @@ function renderRunHistory(){
       r.time ? `⏱ ${r.time}` : "",
       r.calories ? `${r.calories}kcal` : "",
       r.heartRate ? `${r.heartRate}bpm` : "",
-      r.elevation ? `+${r.elevation}m` : ""
+      r.elevation ? `+${r.elevation}m` : "",
+      r.cadence ? `${r.cadence}spm` : ""
     ].filter(Boolean);
     div.innerHTML = `<div class="hrow"><div class="hdate">${r.date}</div><button class="hDeleteBtn" data-idx="${idx}">🗑</button></div><div>${parts.join(' · ')}</div>`;
     div.querySelector(".hDeleteBtn").onclick = (e)=>{ e.stopPropagation(); deleteRunEntry(idx); };
