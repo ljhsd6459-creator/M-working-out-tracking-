@@ -11,6 +11,7 @@
     --border:#2a2f3a;
   }
   *{box-sizing:border-box;}
+  html, body{ overflow-x:hidden; max-width:100%; }
   body{
     margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
     background:var(--bg); color:var(--text); padding-bottom:90px;
@@ -130,17 +131,18 @@
   .hDeleteBtn{background:none; border:none; color:#ff8a8a; font-size:15px; padding:2px 6px; cursor:pointer; line-height:1;}
   .calendarWrap{
     background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px; margin-top:18px;
+    width:100%; overflow:hidden; box-sizing:border-box;
   }
   .calHeader{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
   .calHeader button{
     background:var(--card2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:4px 12px; font-size:14px; font-weight:700;
   }
   .calHeader span{font-weight:700; font-size:14px; color:var(--accent);}
-  .calWeekdays{display:grid; grid-template-columns:repeat(7,1fr); text-align:center; font-size:11px; color:var(--muted); margin-bottom:6px;}
-  .calGrid{display:grid; grid-template-columns:repeat(7,1fr); gap:4px;}
+  .calWeekdays{display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); text-align:center; font-size:11px; color:var(--muted); margin-bottom:6px; width:100%;}
+  .calGrid{display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); gap:3px; width:100%;}
   .calDay{
-    aspect-ratio:1; display:flex; align-items:center; justify-content:center; border-radius:8px;
-    font-size:12px; color:var(--text); background:var(--card2);
+    aspect-ratio:1; min-width:0; max-width:100%; display:flex; align-items:center; justify-content:center; border-radius:8px;
+    font-size:11px; color:var(--text); background:var(--card2); overflow:hidden;
   }
   .calDay.empty{visibility:hidden; background:none;}
   .calDay.marked{background:var(--accent); color:#06201e; font-weight:700; cursor:pointer;}
@@ -1011,8 +1013,11 @@ function updateProgress(){
 }
 
 function resetAllSets(){
-  Object.values(todayState).forEach(s=>{ if(s.checked){ syncDoneLength(s); s.done = s.done.map(()=>false); } });
-  saveToday(); renderCounter();
+  // Clears both the rep/set progress AND the exercise selection itself, so
+  // tomorrow's "운동 선택" list starts empty instead of carrying over today's
+  // checked items (which previously had to be unchecked one by one).
+  Object.values(todayState).forEach(s=>{ if(s.checked){ syncDoneLength(s); s.done = s.done.map(()=>false); s.checked = false; } });
+  saveToday(); renderCounter(); renderExerciseList(); renderCatbar();
   showToast(t().toastReset);
 }
 function completeAllSets(){
