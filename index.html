@@ -867,7 +867,7 @@ function saveJournalToHistory(){
   const history = JSON.parse(localStorage.getItem(STORAGE_KEY_HISTORY) || "[]");
   const dateKey = todayDateKey();
   history.unshift({date:dateKey, text});
-  localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(history.slice(0,60)));
+  localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(history.slice(0,3650)));
   renderHistory();
   showToast(t().toastSaved);
 }
