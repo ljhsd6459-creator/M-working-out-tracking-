@@ -61,7 +61,10 @@
     display:flex;align-items:center;justify-content:center; font-size:13px;
   }
   .exrow.selected .check{background:var(--accent); border-color:var(--accent); color:#06201e;}
-  .exrow .name{flex:1; font-size:14.5px;}
+  .exrow .nameWrap{flex:1; min-width:0;}
+  .exrow .name{font-size:14.5px;}
+  .exTip{font-size:11.5px; color:var(--muted); margin-top:2px; word-break:break-all; line-height:1.4;}
+  .exTip a{color:var(--accent2); text-decoration:underline;}
   .exrow .info{
     width:26px;height:26px;border-radius:50%; border:1px solid var(--border); background:var(--card2);
     color:var(--muted); font-size:13px; flex:0 0 auto;
@@ -701,6 +704,23 @@ const overriddenIds = new Set();
 
 function exId(cat, name){ return cat + "__" + name; }
 
+// 운동 메모(PT 팁) 안에 들어있는 URL을 클릭 가능한 링크로 바꿔줍니다.
+function linkifyText(text){
+  if(!text) return "";
+  const escaped = String(text)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const urlRegex = /((?:https?:\/\/|www\.)[^\s<]+)/gi;
+  return escaped.replace(urlRegex, (match)=>{
+    let trail = "";
+    const trailingMatch = match.match(/[).,!?;:'"\]]+$/);
+    let core = match;
+    if(trailingMatch){ trail = trailingMatch[0]; core = match.slice(0, -trail.length); }
+    if(!core) return match;
+    const href = /^https?:\/\//i.test(core) ? core : "https://" + core;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${core}</a>${trail}`;
+  });
+}
+
 // 표시용 이름/팁: 사용자가 직접 수정했거나 직접 추가한 운동은 그대로, 그 외 내장 운동은 언어에 맞춰 번역본을 보여줍니다.
 function getDisplayName(ex){
   if(currentLang==="en" && !ex.custom && !overriddenIds.has(ex.id) && EN_EX[ex.id]) return EN_EX[ex.id].name;
@@ -884,11 +904,15 @@ function renderExerciseList(){
     if(todayState[id].unit===undefined) todayState[id].unit = "kg";
     const st = todayState[id];
     st.name = ex.name; // 표시는 getDisplayName으로, 저장은 항상 기본 이름 기준
+    const tipText = getDisplayTip(ex);
     const row = document.createElement("div");
     row.className = "exrow" + (st.checked ? " selected" : "");
     row.innerHTML = `
       <div class="check">${st.checked ? "✓" : ""}</div>
-      <div class="name">${getDisplayName(ex)}</div>
+      <div class="nameWrap">
+        <div class="name">${getDisplayName(ex)}</div>
+        ${tipText ? `<div class="exTip">${linkifyText(tipText)}</div>` : ""}
+      </div>
       <div class="setstep">
         <button data-act="dec">−</button>
         <span>${st.sets} ${u.sets}</span>
@@ -897,7 +921,7 @@ function renderExerciseList(){
       <button class="info">✏️</button>
     `;
     row.addEventListener("click", (e)=>{
-      if(e.target.closest(".setstep") || e.target.closest(".info")) return;
+      if(e.target.closest(".setstep") || e.target.closest(".info") || e.target.closest(".exTip")) return;
       st.checked = !st.checked;
       saveToday(); renderExerciseList();
     });
@@ -959,6 +983,7 @@ function renderCounter(){
     syncDoneLength(st);
     const ex = findExerciseById(st.cat, id);
     const displayName = ex ? getDisplayName(ex) : st.name;
+    const tipText = ex ? getDisplayTip(ex) : "";
     const card = document.createElement("div");
     card.className = "counter-card";
     const dotsHtml = st.done.map((d,i)=>`<button class="${d?'done':''}" data-i="${i}">${i+1}</button>`).join("");
@@ -970,6 +995,7 @@ function renderCounter(){
           <button data-act="all">✅</button>
         </div>
       </div>
+      ${tipText ? `<div class="exTip">${linkifyText(tipText)}</div>` : ""}
       <div class="setdots">${dotsHtml}</div>
       <div class="weightrow">
         <input type="number" inputmode="decimal" step="0.5" class="weightInput" placeholder="${u.weightPh}" value="${st.weight!==undefined && st.weight!==null ? st.weight : ''}">
