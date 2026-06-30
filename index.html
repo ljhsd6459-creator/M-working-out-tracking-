@@ -1644,17 +1644,33 @@ function parseRunningOcrWords(words){
     if(!valueRow) continue;
     const valueCols = clusterRowIntoColumns(valueRow);
 
+    // "Hero" stat screens (e.g. a giant "5.92" distance number above a single
+    // "Kilometers" label) often render the number in a huge font, so OCR's
+    // bounding boxes for its digit groups can be spaced far enough apart that
+    // clusterRowIntoColumns (tuned for normal-size stat-grid text) splits one
+    // number into multiple "columns". When the label row has only ONE label,
+    // there's no ambiguity about which value belongs to it, so use the whole
+    // value row's text (in left-to-right order) instead of picking the single
+    // nearest column -- this reassembles a hero number that got split apart.
+    const combinedValueText = valueCols.map(c=>c.text).join(" ");
+
     labelCols.forEach(col=>{
       const field = Object.keys(RUN_LABEL_PATTERNS).find(f=> !claimed[f] && RUN_LABEL_PATTERNS[f].test(col.text));
       if(!field) return;
-      // pick the value column horizontally closest to this label column
-      let best = null, bestDist = Infinity;
-      valueCols.forEach(vc=>{
-        const d = Math.abs(vc.cx - col.cx);
-        if(d < bestDist){ bestDist = d; best = vc; }
-      });
-      if(!best) return;
-      const val = normalizeFieldValue(field, best.text);
+      let val;
+      if(labelCols.length===1){
+        val = normalizeFieldValue(field, combinedValueText);
+      } else {
+        // multiple stats share this row -- pick the value column horizontally
+        // closest to this label column
+        let best = null, bestDist = Infinity;
+        valueCols.forEach(vc=>{
+          const d = Math.abs(vc.cx - col.cx);
+          if(d < bestDist){ bestDist = d; best = vc; }
+        });
+        if(!best) return;
+        val = normalizeFieldValue(field, best.text);
+      }
       if(!val) return;
       result[field] = val;
       claimed[field] = true;
