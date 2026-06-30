@@ -1682,6 +1682,80 @@ function parseRunningOcrWords(words){
   return result;
 }
 
+// Some screenshots (esp. dark-mode running apps) render the small gray stat
+// LABELS ("Kilometers", "Time", ...) too faintly for OCR to recognize at all,
+// while the big bold VALUE numbers read fine. When that happens, the label-
+// based parser above finds nothing, and a naive linear-text regex can latch
+// onto an unrelated number elsewhere in the screenshot -- e.g. a route-map's
+// "5 km" distance marker -- producing a wrong, truncated-looking value. This
+// shape-based pass sidesteps labels entirely: a workout app's total-distance
+// "hero" number is reliably the single largest-font number on the whole
+// screen, and a real "Time" value is reliably the one number on the page
+// shaped like mm:ss / hh:mm:ss. Both signals work even when every label is
+// unreadable garbage.
+function findHeroDistanceFromWords(words){
+  if(!words || words.length < 2) return null;
+  const rows = groupWordsIntoRows(words);
+  let bestRow = null, bestAvgH = 0;
+  rows.forEach(row=>{
+    const numWords = row.words.filter(w=> isNumberLikeWord(w.text));
+    if(numWords.length===0) return;
+    const avgH = numWords.reduce((s,w)=> s + (w.bbox.y1-w.bbox.y0), 0) / numWords.length;
+    if(avgH > bestAvgH){ bestAvgH = avgH; bestRow = row; }
+  });
+  if(!bestRow) return null;
+  // Require the winning row's numbers to be meaningfully taller than other
+  // number rows -- otherwise this isn't a "hero number" screen and guessing
+  // would be unsafe.
+  const otherHeights = rows.map(row=>{
+    if(row===bestRow) return null;
+    const nw = row.words.filter(w=> isNumberLikeWord(w.text));
+    if(!nw.length) return null;
+    return nw.reduce((s,w)=> s + (w.bbox.y1-w.bbox.y0), 0) / nw.length;
+  }).filter(h=> h!==null);
+  if(otherHeights.length){
+    const avgOthers = otherHeights.reduce((a,b)=>a+b,0) / otherHeights.length;
+    if(bestAvgH < avgOthers * 1.5) return null;
+  }
+  const cols = clusterRowIntoColumns(bestRow);
+  const combined = cols.map(c=>c.text).join(" ");
+  const value = normalizeFieldValue("distance", combined);
+  if(!value) return null;
+  // The unit label, if legible at all, usually sits directly below the hero
+  // number -- check the next row down for "mi"/"miles" wording.
+  const idx = rows.indexOf(bestRow);
+  const labelRow = rows[idx+1];
+  let unit = "km";
+  if(labelRow){
+    const labelText = labelRow.words.map(w=>w.text).join(" ");
+    if(/\bmiles?\b|^mi$/i.test(labelText.trim())) unit = "mi";
+  }
+  return {value, unit};
+}
+
+// Find a clean mm:ss / hh:mm:ss token anywhere in the recognized text, used
+// only when no labeled "Time" value could be found. Skips the very first
+// line as a safety margin in case status-bar-clock text leaked past image
+// cropping (a clock would normally appear before anything else OCR reads).
+function findBareTimeInText(text){
+  if(!text) return "";
+  const lines = text.split(/\n+/).map(l=>l.trim()).filter(Boolean);
+  for(let i=1;i<lines.length;i++){
+    const m = lines[i].match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
+    if(m) return m[1];
+  }
+  return "";
+}
+
+function parseRunningOcrShapeFallback(words, text){
+  const result = {distance:"", unit:"km", pace:"", time:"", calories:"", heartRate:"", elevation:"", cadence:""};
+  const hero = findHeroDistanceFromWords(words);
+  if(hero){ result.distance = hero.value; result.unit = hero.unit; }
+  const bareTime = findBareTimeInText(text);
+  if(bareTime) result.time = bareTime;
+  return result;
+}
+
 function flattenWordsFromTesseractData(data){
   const words = [];
   const collect = (blocks)=>{
@@ -1702,11 +1776,23 @@ function flattenWordsFromTesseractData(data){
   return words;
 }
 
-function mergeRunParseResults(structured, fallback){
+// Priority: label-based structured parse (most trustworthy when labels were
+// readable) > shape-based parse (font-size/pattern heuristics, used when
+// labels are unreadable) > naive whole-text regex (weakest signal, can latch
+// onto unrelated numbers like a route-map distance marker, so it only fills
+// whatever the first two passes couldn't find).
+function mergeRunParseResults(structured, shape, fallback){
   const merged = {};
   ["distance","unit","pace","time","calories","heartRate","elevation","cadence"].forEach(field=>{
-    merged[field] = (structured && structured[field]) ? structured[field] : ((fallback && fallback[field]) || (field==="unit" ? "km" : ""));
+    merged[field] = (structured && structured[field]) ? structured[field]
+      : (shape && shape[field]) ? shape[field]
+      : ((fallback && fallback[field]) || (field==="unit" ? "km" : ""));
   });
+  // If shape-based distance was used, its accompanying unit detection should
+  // win too (don't let a leftover fallback "unit" override it).
+  if((!structured || !structured.distance) && shape && shape.distance){
+    merged.unit = shape.unit || merged.unit;
+  }
   return merged;
 }
 
@@ -1745,8 +1831,9 @@ async function handleRunImageSelected(event){
 
     const words = flattenWordsFromTesseractData(data);
     const structured = parseRunningOcrWords(words);
+    const shape = parseRunningOcrShapeFallback(words, text);
     const fallback = parseRunningOcr(text);
-    const merged = mergeRunParseResults(structured, fallback);
+    const merged = mergeRunParseResults(structured, shape, fallback);
     fillRunForm(merged);
 
     const detectedDate = parseRunningOcrDate(text);
