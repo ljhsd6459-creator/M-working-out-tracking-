@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>workingout tracker</title>
+<title>나의 PT 운동 트래커</title>
 <style>
   :root{
     --bg:#0f1115; --card:#1a1d24; --card2:#22262f; --accent:#5ad1c9;
@@ -1541,7 +1541,7 @@ function groupWordsIntoRows(words){
 const RUN_LABEL_PATTERNS = {
   distance: /kilometers?|miles?\b|^km$|^mi$/i,
   pace: /pace/i,
-  time: /^time$/i,
+  time: /\btime\b|duration|moving\s*time|elapsed/i,
   calories: /calor/i,
   heartRate: /heart|bpm/i,
   elevation: /elev/i,
@@ -1586,12 +1586,31 @@ function clusterRowIntoColumns(row, gapThreshold){
 function normalizeFieldValue(field, rawWordsText){
   const cleaned = rawWordsText.replace(/,/g, ".");
   if(field==="distance"){
-    const m = cleaned.match(/(\d{1,3}\.\d{1,2})/) || cleaned.match(/(\d{1,3})/);
+    // Normal case: OCR kept the decimal point, e.g. "5.90".
+    let m = cleaned.match(/(\d{1,3}\.\d{1,2})/);
+    if(m) return m[1];
+    // OCR sometimes drops a thin decimal point entirely, leaving the integer
+    // and fractional parts as two separate tokens, e.g. "5.90" -> "5 90".
+    // If we see exactly that shape (small int, then 1-2 digit group), treat
+    // it as a decimal rather than truncating to just the first number.
+    m = cleaned.match(/^\s*(\d{1,3})\D{1,3}(\d{1,2})\s*$/);
+    if(m) return `${m[1]}.${m[2]}`;
+    m = cleaned.match(/(\d{1,3})/);
     return m ? m[1] : "";
   }
   if(field==="time"){
-    const m = cleaned.match(/(\d{1,2}:\d{2}:\d{2})/) || cleaned.match(/(\d{1,2}:\d{2})/);
-    return m ? m[1] : "";
+    // Normal case: colons survived OCR, e.g. "32:15" or "1:02:15".
+    let m = cleaned.match(/(\d{1,2}:\d{2}:\d{2})/) || cleaned.match(/(\d{1,2}:\d{2})/);
+    if(m) return m[1];
+    // OCR sometimes drops thin colons, leaving each time segment as its own
+    // token, e.g. "32:15" -> "32 15" or "1:02:15" -> "1 02 15". Reconstruct
+    // from 2-3 number groups rather than losing the value entirely.
+    const nums = cleaned.match(/\d{1,2}/g);
+    if(nums && nums.length>=2 && nums.length<=3){
+      const padded = nums.map((n,idx)=> idx===0 ? n : n.padStart(2,"0"));
+      return padded.join(":");
+    }
+    return "";
   }
   if(field==="pace"){
     const m = cleaned.match(/(\d{1,2})[':″′]\s*(\d{2})/);
@@ -1619,7 +1638,7 @@ function parseRunningOcrWords(words){
     const labelCols = clusterRowIntoColumns(rows[i]);
     // find the nearest row ABOVE this one that looks like it holds values
     let valueRow = null;
-    for(let j=i-1; j>=0 && j>=i-2; j--){
+    for(let j=i-1; j>=0 && j>=i-3; j--){
       if(rows[j].words.some(w=> isNumberLikeWord(w.text))){ valueRow = rows[j]; break; }
     }
     if(!valueRow) continue;
